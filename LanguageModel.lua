@@ -5,7 +5,7 @@ require 'VanillaRNN'
 require 'LSTM'
 
 local utils = require 'util.utils'
-
+local utf8 = require 'lua-utf8'
 
 local LM, parent = torch.class('nn.LanguageModel', 'nn.Module')
 
@@ -18,6 +18,9 @@ function LM:__init(kwargs)
     self.token_to_idx[token] = idx
     self.vocab_size = self.vocab_size + 1
   end
+  self.unk = utils.get_kwarg(kwargs, 'unk')
+  self.unk_idx = self.token_to_idx[self.unk]
+  assert(self.unk_idx ~= nil)
 
   self.model_type = utils.get_kwarg(kwargs, 'model_type')
   self.wordvec_dim = utils.get_kwarg(kwargs, 'wordvec_size')
@@ -73,6 +76,15 @@ function LM:__init(kwargs)
   self.net:add(self.view1)
   self.net:add(nn.Linear(H, V))
   self.net:add(self.view2)
+
+  -- we keep around the output weights from the last forward pass while sampling;
+  -- pre-initialize to a (nonsense) uniform vector for convenience
+  local w = self.net:get(1).weight
+  self.scores = torch.squeeze(w.new(1, 1, self.vocab_size):fill(1))
+  self.probs = torch.div(self.scores, self.vocab_size):double()
+  self.has_probs = true
+  -- other persistent state needed for sampling
+  self.temperature = 1.0
 end
 
 
@@ -121,12 +133,19 @@ function LM:resetStates()
 end
 
 
+function LM:clearState()
+  self.net:clearState()
+end
+
+
 function LM:encode_string(s)
-  local encoded = torch.LongTensor(#s)
-  for i = 1, #s do
-    local token = s:sub(i, i)
+  local encoded = torch.LongTensor(utf8.len(s))
+  for i, cp in utf8.codes(s) do
+    local token = utf8.char(cp)
     local idx = self.token_to_idx[token]
-    assert(idx ~= nil, 'Got invalid idx')
+    if idx == nil then
+      idx = self.unk_idx
+    end
     encoded[i] = idx
   end
   return encoded
@@ -144,6 +163,67 @@ function LM:decode_string(encoded)
   return s
 end
 
+-- CLLM interface
+
+function LM:sampling(seed, temperature)
+  torch.manualSeed(seed)
+  self:evaluate()
+  self:resetStates()
+  -- reset remembered scores to be nonsense
+  local w = self.net:get(1).weight
+  self.scores = torch.squeeze(w.new(1, 1, self.vocab_size):fill(1))
+  self.probs = torch.div(self.scores, self.vocab_size):double()
+  self.has_probs = true
+  -- set other options
+  self.temperature = temperature
+end
+
+function LM:compute_probs()
+  self.probs = torch.div(self.scores, self.temperature):double():exp()
+  self.probs:div(torch.sum(self.probs))
+  self.has_probs = true
+end
+
+-- Observe all the characters in the string under the model
+function LM:observe(s)
+  local x = self:encode_string(s):view(1, -1)
+  local x_len = x:size(2)
+  self.scores = torch.squeeze(self:forward(x)[{{}, {x_len, x_len}}])
+  self.has_probs = false
+end
+
+-- Query the probability of a character
+function LM:prob(c)
+  local x = self:encode_string(c)
+  local x_len = x:size(1)
+  assert(x_len == 1)
+  if not self.has_probs then self:compute_probs() end
+  return self.probs[x[1]]
+end
+
+-- Query the log probability of a character
+function LM:logprob(c)
+  local x = self:encode_string(c)
+  local x_len = x:size(1)
+  assert(x_len == 1)
+  if not self.has_probs then self:compute_probs() end
+  return torch.div(torch.log(self.probs[x[1]]), torch.log(2))
+end
+
+-- Generate n characters under the model
+function LM:generate(n)
+  local generated = torch.LongTensor(n)
+  for i = 1, n do
+    if not self.has_probs then self:compute_probs() end
+    local next_char = torch.multinomial(self.probs, 1):view(1, 1)
+    self.scores = torch.squeeze(self:forward(next_char)[{{}, {1, 1}}])
+    self.has_probs = false
+    generated[i] = next_char[1][1]
+  end
+  return self:decode_string(generated)
+end
+
+-- Original sampling interface
 
 --[[
 Sample from the language model. Note that this will reset the states of the
@@ -201,9 +281,4 @@ function LM:sample(kwargs)
 
   self:resetStates()
   return self:decode_string(sampled[1])
-end
-
-
-function LM:clearState()
-  self.net:clearState()
 end

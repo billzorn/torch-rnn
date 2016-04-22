@@ -13,6 +13,7 @@ local cmd = torch.CmdLine()
 -- Dataset options
 cmd:option('-input_h5', 'data/tiny-shakespeare.h5')
 cmd:option('-input_json', 'data/tiny-shakespeare.json')
+cmd:option('-unk', '\x1a')
 cmd:option('-batch_size', 50)
 cmd:option('-seq_length', 50)
 
@@ -75,11 +76,29 @@ end
 
 -- Initialize the DataLoader and vocabulary
 local loader = DataLoader(opt)
+-- the vocab has idx_to_token and token_to_idx; I'm honestly not sure why we clone them
 local vocab = utils.read_json(opt.input_json)
+-- we can take this opportunity to make sure the unknown character is in our vocabulary
 local idx_to_token = {}
+local found_unk = false
 for k, v in pairs(vocab.idx_to_token) do
   idx_to_token[tonumber(k)] = v
+  if v == opt.unk then found_unk = true end
 end
+if not found_unk then
+   local unk_idx = #idx_to_token
+   local inserted_unk = false
+   while not inserted_unk do
+      if idx_to_token[unk_idx] == nil then
+	 idx_to_token[unk_idx] = opt.unk
+	 inserted_unk = true
+      else
+	 unk_idx = unk_idx + 1
+      end
+   end
+end
+-- This final idx_to_token is now the official interface for our language model;
+-- the language model will derive its own token_to_idx from it.
 
 -- Set up some variables we will use below
 local N, T = opt.batch_size, opt.seq_length
