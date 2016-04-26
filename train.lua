@@ -4,6 +4,11 @@ require 'optim'
 
 require 'LanguageModel'
 require 'util.DataLoader'
+require 'util.StreamLoader'
+
+
+local unistd = require 'posix.unistd'
+
 
 local utils = require 'util.utils'
 local unpack = unpack or table.unpack
@@ -11,8 +16,9 @@ local unpack = unpack or table.unpack
 local cmd = torch.CmdLine()
 
 -- Dataset options
-cmd:option('-input_h5', 'data/tiny-shakespeare.h5')
-cmd:option('-input_json', 'data/tiny-shakespeare.json')
+cmd:option('-vocab', '')
+cmd:option('-input_h5', '')
+cmd:option('-stream_cmd', '')
 cmd:option('-unk', '\x1a')
 cmd:option('-batch_size', 50)
 cmd:option('-seq_length', 50)
@@ -30,13 +36,16 @@ cmd:option('-batchnorm', 0)
 
 -- Optimization options
 cmd:option('-max_epochs', 50)
+cmd:option('-max_batches', 10000)
 cmd:option('-learning_rate', 2e-3)
 cmd:option('-grad_clip', 5)
-cmd:option('-lr_decay_every', 5)
+cmd:option('-lr_decay_epochs', 5)
+cmd:option('-lr_decay_batches', 1000)
 cmd:option('-lr_decay_factor', 0.5)
 
 -- Output options
 cmd:option('-print_every', 1)
+cmd:option('-eval_val_every', 1000)
 cmd:option('-checkpoint_every', 1000)
 cmd:option('-checkpoint_name', 'cv/checkpoint')
 
@@ -74,10 +83,9 @@ else
 end
 
 
--- Initialize the DataLoader and vocabulary
-local loader = DataLoader(opt)
--- the vocab has idx_to_token and token_to_idx; I'm honestly not sure why we clone them
-local vocab = utils.read_json(opt.input_json)
+-- The vocab has idx_to_token and token_to_idx; I'm honestly not sure why we clone them
+local vocab = utils.read_json(opt.vocab)
+
 -- we can take this opportunity to make sure the unknown character is in our vocabulary
 local idx_to_token = {}
 local found_unk = false
@@ -99,6 +107,18 @@ if not found_unk then
 end
 -- This final idx_to_token is now the official interface for our language model;
 -- the language model will derive its own token_to_idx from it.
+
+-- copy of opt, but with idx_to_token in it
+local opt_vocab = torch.deserialize(torch.serialize(opt))
+opt_vocab.idx_to_token = idx_to_token
+
+-- create a fixed data loader, if we've specified an input h5 file
+local loader = nil
+if opt.input_h5 ~= '' then loader = DataLoader(opt) end
+-- create a stream loader if we've specified a command
+local streamer = nil
+if opt.stream_cmd ~= '' then streamer = StreamLoader(opt_vocab) end
+
 
 -- Set up some variables we will use below
 local N, T = opt.batch_size, opt.seq_length
@@ -132,9 +152,7 @@ if opt.init_from ~= '' then
     memory_usage = checkpoint.memory_usage
   end
 else
-  local opt_clone = torch.deserialize(torch.serialize(opt))
-  opt_clone.idx_to_token = idx_to_token
-  model = nn.LanguageModel(opt_clone):type(dtype)
+  model = nn.LanguageModel(opt_vocab):type(dtype)
 end
 local params, grad_params = model:getParameters()
 local crit = nn.CrossEntropyCriterion():type(dtype)
@@ -154,7 +172,12 @@ local function f(w)
 
   -- Get a minibatch and run the model forward, maybe timing it
   local timer
-  local x, y = loader:nextBatch('train')
+  local x, y
+  if streamer ~= nil then
+    x, y = streamer:next_batch()
+  else
+    x, y = loader:nextBatch('train')
+  end
   x, y = x:type(dtype), y:type(dtype)
   if opt.speed_benchmark == 1 then
     if cutorch then cutorch.synchronize() end
@@ -201,27 +224,44 @@ local first_batch = 1
 if opt.reset_training_position == 0 then
   print('Skipping batches:', last_resumed_batch)
   while first_batch <= last_resumed_batch do
-    local x, y = loader:nextBatch('train')
+    if streamer ~= nil then streamer:next_batch() end
+    if loader ~= nil then loader:nextBatch('train') end
     first_batch = first_batch + 1
   end
 end
 
 -- Train the model!
 local optim_config = {learningRate = opt.learning_rate}
-local num_train = loader.split_sizes['train']
-local num_iterations = opt.max_epochs * num_train
+local num_train = 0
+if loader ~= nil then num_train = loader.split_sizes['train'] end
+local num_iterations = 0
+if streamer ~= nil then
+  num_iterations = opt.max_batches
+elseif loader ~= nil then
+  num_iterations = opt.max_epochs * num_train
+end
+
 model:training()
 for i = first_batch, num_iterations do
-  local epoch = math.floor(i / num_train) + 1
 
-  -- Check if we are at the end of an epoch
-  if i % num_train == 0 then
-    model:resetStates() -- Reset hidden states
-
+  -- Epochs don't make sense if we have provided a stream for training
+  if streamer ~= nil then
     -- Maybe decay learning rate
-    if epoch % opt.lr_decay_every == 0 then
+    if opt.lr_decay_batches > 0 and i % opt.lr_decay_batches == 0 then
       local old_lr = optim_config.learningRate
       optim_config = {learningRate = old_lr * opt.lr_decay_factor}
+    end
+  else
+    local epoch = math.floor(i / num_train) + 1
+    -- Check if we are at the end of an epoch
+    if i % num_train == 0 then
+      model:resetStates() -- Reset hidden states
+
+      -- Maybe decay learning rate
+      if opt.lr_decay_epochs > 0 and epoch % opt.lr_decay_epochs == 0 then
+	local old_lr = optim_config.learningRate
+	optim_config = {learningRate = old_lr * opt.lr_decay_factor}
+      end
     end
   end
 
@@ -230,18 +270,23 @@ for i = first_batch, num_iterations do
   local _, loss = optim.adam(f, params, optim_config)
   table.insert(train_loss_history, loss[1])
   if opt.print_every > 0 and i % opt.print_every == 0 then
-    local float_epoch = i / num_train + 1
-    local msg = 'Epoch %.2f / %d, i = %d / %d, loss = %f'
-    local args = {msg, float_epoch, opt.max_epochs, i, num_iterations, loss[1]}
-    print(string.format(unpack(args)))
+    if streamer ~= nil then
+      local msg = 'Streaming, i = %d / %d, loss = %f'
+      local args = {msg, i, num_iterations, loss[1]}
+      print(string.format(unpack(args)))
+    else
+      local float_epoch = i / num_train
+      local msg = 'Epoch %.2f / %d, i = %d / %d, loss = %f'
+      local args = {msg, float_epoch, opt.max_epochs, i, num_iterations, loss[1]}
+      print(string.format(unpack(args)))
+    end
   end
 
-  -- Maybe save a checkpoint
-  local check_every = opt.checkpoint_every
-  if (check_every > 0 and i % check_every == 0) or i == num_iterations then
+  -- Maybe evaluate val loss
+  if opt.eval_val_every > 0 and (i % opt.eval_val_every == 0 or i == num_iterations) then
     -- Evaluate loss on the validation set. Note that we reset the state of
     -- the model; this might happen in the middle of an epoch, but that
-    -- shouldn't cause too much trouble.
+    -- shouldn't cause too much trouble. Seems like the alternative is cloning the entire model?
     model:evaluate()
     model:resetStates()
     local num_val = loader.split_sizes['val']
@@ -259,7 +304,15 @@ for i = first_batch, num_iterations do
     table.insert(val_loss_history_it, i)
     model:resetStates()
     model:training()
+    -- not clear whether we need to make this call; in the original code it always happened
+    -- after evaluating val loss when we saved the checkpoint
+    model:clearState()
+    -- if we do make it, I think we'll have to do this as well
+    params, grad_params = model:getParameters()
+  end
 
+  -- Maybe save a checkpoint
+  if (opt.checkpoint_every > 0 and i % opt.checkpoint_every == 0) or i == num_iterations then
     -- First save a JSON checkpoint, excluding the model
     local checkpoint = {
       opt = opt,
@@ -270,20 +323,29 @@ for i = first_batch, num_iterations do
       memory_usage = memory_usage,
     }
     local filename = string.format('%s_%d.json', opt.checkpoint_name, i)
+    print('saving json checkpoint:', filename)
     -- Make sure the output directory exists before we try to write it
     paths.mkdir(paths.dirname(filename))
     utils.write_json(filename, checkpoint)
 
-    -- Now save a torch checkpoint with the model
-    -- Cast the model to float before saving so it can be used on CPU
+    -- Now save a torch checkpoint with the model.
+    -- You can either make both of these calls, or neither. I'm not sure what the ramifications
+    -- of omitting them are for the saved checkpoints; it seems better not to interfere with
+    -- the state during training any more than we have to, though it will apparently
+    -- massively increase the size of checkpoints on disk since we're saving all kinds of 
+    -- intermediate data.
+    model:resetStates()
     model:clearState()
+    -- Cast the model to float before saving so it can be used on CPU
     model:float()
     checkpoint.model = model
     local filename = string.format('%s_%d.t7', opt.checkpoint_name, i)
+    print('saving torch checkpoint:', filename)
     paths.mkdir(paths.dirname(filename))
     torch.save(filename, checkpoint)
     model:type(dtype)
     params, grad_params = model:getParameters()
     collectgarbage()
   end
+
 end
