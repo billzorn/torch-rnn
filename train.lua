@@ -6,10 +6,6 @@ require 'LanguageModel'
 require 'util.DataLoader'
 require 'util.StreamLoader'
 
-
-local unistd = require 'posix.unistd'
-
-
 local utils = require 'util.utils'
 local unpack = unpack or table.unpack
 
