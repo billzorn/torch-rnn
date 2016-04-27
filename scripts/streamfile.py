@@ -5,6 +5,7 @@ import threading
 import time
 import signal
 import traceback
+import psutil
 
 # correctly setting up a stream that won't get orphaned and left clutting the operating
 # system proceeds in 3 parts:
@@ -25,8 +26,11 @@ def spawn_stream_threads(fds, runthread, mkargs):
 def force_kill_self_noreturn():
     # We have a strange issue here, which is that our threads will refuse to die
     # to a normal exit() or sys.exit() because they're all blocked in write() calls
-    # on full pipes; the simples workaround seems to be to ask the OS to terminate us
-    os.kill(os.getpid(), signal.SIGTERM)
+    # on full pipes; the simplest workaround seems to be to ask the OS to terminate us.
+    # This works, but...
+    #os.kill(os.getpid(), signal.SIGTERM)
+    # psutil might have useful features like checking if the pid has been reused before killing it.
+    psutil.Process(os.getpid()).terminate()
 
 def handler_kill_self(signum, frame):
     traceback.print_stack(frame)

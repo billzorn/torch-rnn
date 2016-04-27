@@ -218,7 +218,6 @@ def main(args):
         return (i, fd)
 
     streamfile.streaming_noreturn(fds, write_stream, mkargs)
-                    
 
 
 if __name__ == '__main__':
@@ -252,4 +251,3 @@ if __name__ == '__main__':
             f.write(s)
 
     main(args)
-
