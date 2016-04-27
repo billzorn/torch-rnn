@@ -7,6 +7,8 @@ import codecs
 import numpy as np
 import h5py
 
+gutenberg_url = 'http://www.gutenberg.org/cache/epub/100/pg100.txt'
+
 license_block = '''<<THIS ELECTRONIC VERSION OF THE COMPLETE WORKS OF WILLIAM
 SHAKESPEARE IS COPYRIGHT 1990-1993 BY WORLD LIBRARY, INC., AND IS
 PROVIDED BY PROJECT GUTENBERG ETEXT OF ILLINOIS BENEDICTINE COLLEGE
@@ -15,6 +17,16 @@ DISTRIBUTED SO LONG AS SUCH COPIES (1) ARE FOR YOUR OR OTHERS
 PERSONAL USE ONLY, AND (2) ARE NOT DISTRIBUTED OR USED
 COMMERCIALLY.  PROHIBITED COMMERCIAL DISTRIBUTION INCLUDES BY ANY
 SERVICE THAT CHARGES FOR DOWNLOAD TIME OR FOR MEMBERSHIP.>>'''
+
+def gutenberg_fix_txt(s):
+    title = '''1593
+
+THE COMEDY OF ERRORS
+
+by William Shakespeare'''
+    orig = re.escape(title) + r'\s*' + re.escape(license_block)
+    fixed = license_block + '\n\n\n\n' + title + '\n'
+    return re.sub(orig, fixed, re.sub(r'\r\n', '\n', s))
 
 # play separator
 sep_1 = '\x1c'
@@ -164,6 +176,7 @@ def encode(train_fname, val_fname, plays, plays_train, plays_val, seed = 9869696
 
 
 if __name__ == '__main__':
+    import os
     import argparse
     
     parser = argparse.ArgumentParser()
@@ -183,6 +196,14 @@ if __name__ == '__main__':
                         help='h5 file to optionally write the corpus to')
 
     args = parser.parse_args()
+
+    # download from project gutenberg if the file doesn't already exist
+    if not os.path.exists(args.fname):
+        import urllib2
+        webf = urllib2.urlopen(gutenberg_url)
+        s = gutenberg_fix_txt(webf.read())
+        with open(args.fname, 'wt') as f:
+            f.write(s)
 
     plays = unpack(args.fname)
 
