@@ -246,6 +246,7 @@ for i = first_batch, num_iterations do
     if opt.lr_decay_batches > 0 and i % opt.lr_decay_batches == 0 then
       local old_lr = optim_config.learningRate
       optim_config = {learningRate = old_lr * opt.lr_decay_factor}
+      print('decayed learning rate to', old_lr * opt.lr_decay_factor)
     end
   else
     local epoch = math.floor(i / num_train) + 1
@@ -257,6 +258,7 @@ for i = first_batch, num_iterations do
       if opt.lr_decay_epochs > 0 and epoch % opt.lr_decay_epochs == 0 then
 	local old_lr = optim_config.learningRate
 	optim_config = {learningRate = old_lr * opt.lr_decay_factor}
+	print('decayed learning rate to', old_lr * opt.lr_decay_factor)
       end
     end
   end

@@ -4,37 +4,40 @@ import os
 import threading
 import time
 import signal
+import traceback
 
-def write_stream(fd, fname, offset = 0, block_size = 10000):
-    with open('/proc/self/fd/'+str(fd), 'wt') as f_stream:
-        with open(fname, 'rt') as f_in:
-            f_in.seek(offset)
-            while True:
-                text = f_in.read(block_size)
-                f_stream.write(text)
-                if len(text) < block_size:
-                    f_in.seek(0)
+# correctly setting up a stream that won't get orphaned and left clutting the operating
+# system proceeds in 3 parts:
+#   1) invoke install_suicide_handlers() to ensure correct behavior on interrupt
+#   2) get threads by invoking spawn_stream_threads
+#   3) invoke wait_and_kill_self_noreturn(threads)
+# or, use the handy wrapper that does it for you
 
-def spawn_threads(fds, fname, block_size = 10000):
-    flen = os.path.getsize(fname)
-    offset = max(flen // len(fds), 1)
-
+def spawn_stream_threads(fds, runthread, mkargs):
     threads = []
-    for i, fd in enumerate(args.fds):
-        stream_thread = threading.Thread(target=write_stream,
-                                         args=(fd, fname, (i*offset)%flen, block_size))
+    for i, fd in enumerate(fds):
+        stream_thread = threading.Thread(target=runthread, args=mkargs(i, fd))
         stream_thread.daemon = True
         stream_thread.start()
         threads.append(stream_thread)
     return threads
 
-def main(args):
-    fds = args.fds
-    fname = args.fname
-    block_size =  args.block_size
-    
-    # wait for infinite loop
-    threads = spawn_threads(fds, fname, block_size)
+def force_kill_self_noreturn():
+    # We have a strange issue here, which is that our threads will refuse to die
+    # to a normal exit() or sys.exit() because they're all blocked in write() calls
+    # on full pipes; the simples workaround seems to be to ask the OS to terminate us
+    os.kill(os.getpid(), signal.SIGTERM)
+
+def handler_kill_self(signum, frame):
+    traceback.print_stack(frame)
+    print('caught signal {:d} - streamer sending SIGTERM to self'.format(signum))
+    force_kill_self_noreturn()
+
+def install_suicide_handlers():
+    for sig in [signal.SIGHUP, signal.SIGINT, signal.SIGQUIT]:
+        signal.signal(sig, handler_kill_self)
+
+def wait_and_kill_self_noreturn(threads):
     running = True
     while running:
         running = False
@@ -45,10 +48,38 @@ def main(args):
             # exit if parent process died (and we were reparented to init)
             break
         time.sleep(1)
-    # We have a strange issue here, which is that our threads will refuse to die
-    # to a normal exit() or sys.exit() because they're all blocked in write() calls
-    # on full pipes; the simples workaround seems to be to ask the OS to terminate us
-    os.kill(os.getpid(), signal.SIGTERM)
+    force_kill_self_noreturn()
+
+def streaming_noreturn(fds, write_stream, mkargs):
+    install_suicide_handlers()
+    threads = spawn_stream_threads(fds, write_stream, mkargs)
+    wait_and_kill_self_noreturn(threads)
+    assert False, 'should not return from streaming'
+
+
+def main(args):
+    fds = args.fds
+    fname = args.fname
+    block_size =  args.block_size
+
+    flen = os.path.getsize(fname)
+    offset = max(flen // len(fds), 1)
+
+    def write_stream(fd, offset = 0):
+        with open('/proc/self/fd/'+str(fd), 'wt') as f_stream:
+            with open(fname, 'rt') as f_in:
+                f_in.seek(offset)
+                while True:
+                    text = f_in.read(block_size)
+                    f_stream.write(text)
+                    if len(text) < block_size:
+                        f_in.seek(0)
+
+    def mkargs(i, fd):
+        return (fd, (i*offset)%flen)
+
+    streaming_noreturn(fds, write_stream, mkargs)
+    
 
 if __name__ == '__main__':
     import argparse

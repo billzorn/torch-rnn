@@ -152,7 +152,7 @@ def encode(train_fname, val_fname, plays, plays_train, plays_val, seed = 9869696
 
     train_size = len(train_corpus)
     val_size = len(val_corpus)
-    test_size = 0
+    test_size = 1 # this is stupid
 
     token_to_idx, idx_to_token = vocab(plays)
     dtype = np.uint8
@@ -169,10 +169,56 @@ def encode(train_fname, val_fname, plays, plays_train, plays_val, seed = 9869696
     for i, c in enumerate(val_corpus):
         val_data[i] = token_to_idx[c]
 
+    print('writing h5 dataset to {:s}'.format(h5_fname))
+
     with h5py.File(h5_fname, 'w') as f:
         f.create_dataset('train', data=train_data)
         f.create_dataset('val', data=val_data)
         f.create_dataset('test', data=test_data)
+
+
+def main(args):
+    plays = unpack(args.fname)
+
+    if args.json:
+        token_to_idx, idx_to_token = vocab(plays)
+        json_data = {'token_to_idx':token_to_idx, 'idx_to_token':idx_to_token}
+        print('writing vocabulary ({:d}) to {:s}'.format(len(token_to_idx), args.json))
+        with open(args.json, 'w') as f:
+            json.dump(json_data, f)
+
+    plays_train, plays_val = split(plays)
+
+    if args.train and args.val:
+        encode(args.train, args.val, plays, plays_train, plays_val, h5_fname=args.h5)
+        return
+
+    # else stream
+
+    fds = args.fds
+    assert(len(fds) > 0)
+
+    import streamfile
+
+    main_seed = 997192374
+
+    def write_stream(i, fd):
+        local_random = random.Random(main_seed)
+        local_random.jumpahead(i)
+        local_plays = {name:plays_train[name] for name in plays_train}
+        local_names = local_plays.keys()
+        with open('/proc/self/fd/'+str(fd), 'wt') as f:
+            while True:
+                local_random.shuffle(local_names)
+                for name in local_names:
+                    f.write(sep_2.join(local_plays[name]))
+                    f.write(sep_1)
+
+    def mkargs(i, fd):
+        return (i, fd)
+
+    streamfile.streaming_noreturn(fds, write_stream, mkargs)
+                    
 
 
 if __name__ == '__main__':
@@ -205,19 +251,5 @@ if __name__ == '__main__':
         with open(args.fname, 'wt') as f:
             f.write(s)
 
-    plays = unpack(args.fname)
-
-    if args.json:
-        token_to_idx, idx_to_token = vocab(plays)
-        json_data = {'token_to_idx':token_to_idx, 'idx_to_token':idx_to_token}
-        print('writing vocabulary ({:d}) to {:s}'.format(len(token_to_idx), args.json))
-        with open(args.json, 'w') as f:
-            json.dump(json_data, f)
-
-    plays_train, plays_val = split(plays)
-
-    if args.train and args.val:
-        encode(args.train, args.val, plays, plays_train, plays_val, h5_fname=args.h5)
-    else:
-        print('will stream')
+    main(args)
 
