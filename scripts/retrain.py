@@ -44,9 +44,9 @@ def main(args):
     
     # Currently the script throws away -init_from and -reset_training_history.
     init_from = ''
-    reset_training_history = 1
-    # It does respect -reset_training_position.
-    reset_training_position = args.reset_training_position
+    reset_training_history = 0
+    # Also -reset_training_position.
+    reset_training_position = 0
 
     # Not supported as an argument, but could be
     max_retries = 3
@@ -63,11 +63,12 @@ def main(args):
     retries = 0
     cp, batch = get_last_cp_batch(cp_dir, cp_prefix, cp_suffix)
     while batch < max_batches:
-        this_cmd = cmd
+        this_cmd = [s for s in cmd]
         if cp != '':
             this_cmd += ['-init_from', cp,
                          '-reset_training_history', str(reset_training_history),
                          '-reset_training_position', str(reset_training_position),]
+        print(this_cmd)
 
         print('\n--------')
         print('starting from {:s}, batch {:d}'.format(cp, batch))
@@ -91,6 +92,7 @@ def main(args):
         else:
             retries = 0
             first = False
+            batch = newbatch
 
     print('\n\nDone, reached target at {:s}, batch {:d}'.format(cp, batch))
 
