@@ -35,6 +35,15 @@ def extract_args(argv, keys):
             i += 1
     return key_args, other_args
 
+def pprint_cmdline(cmd):
+    sys.stdout.write(' ')
+    for s in cmd:
+        if s[:1] == '-':
+            sys.stdout.write('\n    ')
+        else:
+            sys.stdout.write(' ')
+        sys.stdout.write(repr(s)[1:-1])
+    sys.stdout.write('\n')
 
 def main(args):
     cp_dir, cp_prefix = os.path.split(args.checkpoint_name)
@@ -59,21 +68,33 @@ def main(args):
     if not os.path.exists(cp_dir):
         os.path.makedirs(cp_dir)
 
+    cp, batch = get_last_cp_batch(cp_dir, cp_prefix, cp_suffix)
+
+    print('--------')
+    print('{:s}: restarting training until {:d} batches'.format(sys.argv[0], max_batches))
+    print('  or {:d} consecutive failures to make progress.'.format(max_retries))
+    if cp != '':
+        print('Found existing checkpoint {:s}, batch {:d}'.format(cp, batch))
+    print('Command:')
+    pprint_cmdline(cmd)
+    print('--------')
+
+    print('\nPress enter to continue, or C-c to interrupt')
+    sys.stdin.readline()
+
     first = True
     retries = 0
-    cp, batch = get_last_cp_batch(cp_dir, cp_prefix, cp_suffix)
     while batch < max_batches:
         this_cmd = [s for s in cmd]
         if cp != '':
             this_cmd += ['-init_from', cp,
                          '-reset_training_history', str(reset_training_history),
                          '-reset_training_position', str(reset_training_position),]
-        print(this_cmd)
 
         print('\n--------')
         print('starting from {:s}, batch {:d}'.format(cp, batch))
         print(' '.join(this_cmd))
-        print('--------')
+        print('--------\n')
 
         status = subprocess.call(this_cmd)
 

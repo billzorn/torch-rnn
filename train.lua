@@ -8,6 +8,7 @@ require 'util.StreamLoader'
 
 local utils = require 'util.utils'
 local unpack = unpack or table.unpack
+local utf8 = require 'lua-utf8'
 
 local cmd = torch.CmdLine()
 
@@ -44,6 +45,7 @@ cmd:option('-print_every', 1)
 cmd:option('-eval_val_every', 1000)
 cmd:option('-checkpoint_every', 1000)
 cmd:option('-checkpoint_name', 'cv/checkpoint')
+cmd:option('-verbose', 1)
 
 -- Benchmark options
 cmd:option('-speed_benchmark', 0)
@@ -63,7 +65,9 @@ if opt.gpu >= 0 and opt.gpu_backend == 'cuda' then
   require 'cunn'
   cutorch.setDevice(opt.gpu + 1)
   dtype = 'torch.CudaTensor'
-  print(string.format('Running with CUDA on GPU %d', opt.gpu))
+  if opt.verbose >= 1 then
+    print(string.format('Running with CUDA on GPU %d', opt.gpu))
+  end
 elseif opt.gpu >= 0 and opt.gpu_backend == 'opencl' then
   -- Memory benchmarking is only supported in CUDA mode
   -- TODO: Time benchmarking is probably wrong in OpenCL mode.
@@ -71,11 +75,15 @@ elseif opt.gpu >= 0 and opt.gpu_backend == 'opencl' then
   require 'clnn'
   cltorch.setDevice(opt.gpu + 1)
   dtype = torch.Tensor():cl():type()
-  print(string.format('Running with OpenCL on GPU %d', opt.gpu))
+  if opt.verbose >= 1 then
+    print(string.format('Running with OpenCL on GPU %d', opt.gpu))
+  end
 else
   -- Memory benchmarking is only supported in CUDA mode
   opt.memory_benchmark = 0
-  print 'Running in CPU mode'
+  if opt.verbose >= 1 then
+    print 'Running in CPU mode'
+  end
 end
 
 
@@ -85,9 +93,11 @@ local vocab = utils.read_json(opt.vocab)
 -- we can take this opportunity to make sure the unknown character is in our vocabulary
 local idx_to_token = {}
 local found_unk = false
+local vocab_size = 0
 for k, v in pairs(vocab.idx_to_token) do
   idx_to_token[tonumber(k)] = v
   if v == opt.unk then found_unk = true end
+  vocab_size = vocab_size + 1
 end
 if not found_unk then
    local unk_idx = #idx_to_token
@@ -115,6 +125,24 @@ if opt.input_h5 ~= '' then loader = DataLoader(opt) end
 local streamer = nil
 if opt.stream_cmd ~= '' then streamer = StreamLoader(opt_vocab) end
 
+if loader == nil and streamer == nil then
+  print('No data specified, aborting')
+  os.exit(1)
+end
+
+if opt.verbose >= 2 then
+  print('read vocabulary from:', opt.vocab)
+  print('  vocab size:', vocab_size)
+  print('  unk:', opt.unk, utf8.byte(opt.unk), 'in vocab?', found_unk)
+  if streamer ~= nil then
+    print('streaming training data using:', opt.stream_cmd)
+  elseif loader ~= nil then
+    print('read training data from:', opt.input_h5)
+  end
+  if loader ~= nil then
+    print('read validation data from:', opt.input_h5)
+  end
+end
 
 -- Set up some variables we will use below
 local N, T = opt.batch_size, opt.seq_length
@@ -128,7 +156,9 @@ local init_memory_usage, memory_usage = nil, {}
 local model = nil
 local last_resumed_batch = 0
 if opt.init_from ~= '' then
-  print('Initializing from ', opt.init_from)
+  if opt.verbose >= 2 then
+    print('Initializing from ', opt.init_from)
+  end
   local checkpoint = torch.load(opt.init_from)
   model = checkpoint.model:type(dtype)
   last_resumed_batch = checkpoint.val_loss_history_it[#checkpoint.val_loss_history_it]
@@ -193,7 +223,9 @@ local function f(w)
   if timer then
     if cutorch then cutorch.synchronize() end
     local time = timer:time().real
-    print('Forward / Backward pass took ', time)
+    if opt.verbose >= 1 then
+      print('Forward / Backward pass took ', time)
+    end
     table.insert(forward_backward_times, time)
   end
 
@@ -204,7 +236,9 @@ local function f(w)
     local free, total = cutorch.getMemoryUsage(cutorch.getDevice())
     local memory_used = total - free - init_memory_usage
     local memory_used_mb = memory_used / 1024 / 1024
-    print(string.format('Using %dMB of memory', memory_used_mb))
+    if opt.verbose >= 1 then
+      print(string.format('Using %dMB of memory', memory_used_mb))
+    end
     table.insert(memory_usage, memory_used)
   end
 
@@ -218,7 +252,9 @@ end
 -- Skip batches that have already been trained on by a resumed checkpoint
 local first_batch = 1
 if opt.reset_training_position == 0 then
-  print('Skipping batches:', last_resumed_batch)
+  if opt.verbose >= 2 then
+    print('Skipping batches:', last_resumed_batch)
+  end
   while first_batch <= last_resumed_batch do
     if streamer ~= nil then streamer:next_batch() end
     if loader ~= nil then loader:nextBatch('train') end
@@ -237,6 +273,10 @@ elseif loader ~= nil then
   num_iterations = opt.max_epochs * num_train
 end
 
+if opt.verbose >= 2 then
+  print('Begin training: batch', first_batch, 'to', num_iterations)
+end
+
 model:training()
 for i = first_batch, num_iterations do
 
@@ -246,7 +286,9 @@ for i = first_batch, num_iterations do
     if opt.lr_decay_batches > 0 and i % opt.lr_decay_batches == 0 then
       local old_lr = optim_config.learningRate
       optim_config = {learningRate = old_lr * opt.lr_decay_factor}
-      print('decayed learning rate to', old_lr * opt.lr_decay_factor)
+      if opt.verbose >= 1 then
+	print('decayed learning rate to', old_lr * opt.lr_decay_factor)
+      end
     end
   else
     local epoch = math.floor(i / num_train) + 1
@@ -258,7 +300,9 @@ for i = first_batch, num_iterations do
       if opt.lr_decay_epochs > 0 and epoch % opt.lr_decay_epochs == 0 then
 	local old_lr = optim_config.learningRate
 	optim_config = {learningRate = old_lr * opt.lr_decay_factor}
-	print('decayed learning rate to', old_lr * opt.lr_decay_factor)
+	if opt.verbose >= 1 then
+	  print('decayed learning rate to', old_lr * opt.lr_decay_factor)
+	end
       end
     end
   end
@@ -267,7 +311,7 @@ for i = first_batch, num_iterations do
   -- Note that adam returns a singleton array of losses
   local _, loss = optim.adam(f, params, optim_config)
   table.insert(train_loss_history, loss[1])
-  if opt.print_every > 0 and i % opt.print_every == 0 then
+  if opt.verbose >= 1 and opt.print_every > 0 and i % opt.print_every == 0 then
     if streamer ~= nil then
       local msg = 'Streaming, i = %d / %d, loss = %f'
       local args = {msg, i, num_iterations, loss[1]}
@@ -297,7 +341,9 @@ for i = first_batch, num_iterations do
       val_loss = val_loss + crit:forward(scores, yv)
     end
     val_loss = val_loss / num_val
-    print('val_loss = ', val_loss)
+    if opt.verbose >= 1 then
+      print('val_loss =', val_loss)
+    end
     table.insert(val_loss_history, val_loss)
     table.insert(val_loss_history_it, i)
     model:resetStates()
@@ -321,7 +367,9 @@ for i = first_batch, num_iterations do
       memory_usage = memory_usage,
     }
     local filename = string.format('%s_%d.json', opt.checkpoint_name, i)
-    print('saving json checkpoint:', filename)
+    if opt.verbose >= 1 then
+      print('saving json checkpoint:', filename)
+    end
     -- Make sure the output directory exists before we try to write it
     paths.mkdir(paths.dirname(filename))
     utils.write_json(filename, checkpoint)
@@ -338,7 +386,9 @@ for i = first_batch, num_iterations do
     model:float()
     checkpoint.model = model
     local filename = string.format('%s_%d.t7', opt.checkpoint_name, i)
-    print('saving torch checkpoint:', filename)
+    if opt.verbose >= 1 then
+      print('saving torch checkpoint:', filename)
+    end
     paths.mkdir(paths.dirname(filename))
     torch.save(filename, checkpoint)
     model:type(dtype)
@@ -346,4 +396,8 @@ for i = first_batch, num_iterations do
     collectgarbage()
   end
 
+end
+
+if opt.verbose >= 2 then
+  print('Training finished.')
 end
