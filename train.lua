@@ -161,7 +161,7 @@ if opt.init_from ~= '' then
   end
   local checkpoint = torch.load(opt.init_from)
   model = checkpoint.model:type(dtype)
-  last_resumed_batch = checkpoint.val_loss_history_it[#checkpoint.val_loss_history_it]
+  last_resumed_batch = checkpoint.i
   -- Recover model-related parameters from the loaded checkpoint
   opt.model_type = checkpoint.opt.model_type
   opt.wordvec_dim = checkpoint.opt.wordvec_dim
