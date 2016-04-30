@@ -30,7 +30,11 @@ def force_kill_self_noreturn():
     # This works, but...
     #os.kill(os.getpid(), signal.SIGTERM)
     # psutil might have useful features like checking if the pid has been reused before killing it.
-    psutil.Process(os.getpid()).terminate()
+    # Also we might have child processes like l2e luajits to think about.
+    me = psutil.Process(os.getpid())
+    for child in me.children(recursive=True):
+        child.terminate()
+    me.terminate()
 
 def handler_kill_self(signum, frame):
     traceback.print_stack(frame)
