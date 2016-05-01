@@ -223,6 +223,15 @@ function LM:generate(n)
   return self:decode_string(generated)
 end
 
+-- Report a possible next character under the model, but don't update the state
+function LM:peek()
+  local generated = torch.LongTensor(1)
+  if not self.has_probs then self:compute_probs() end
+  local next_char = torch.multinomial(self.probs, 1):view(1, 1)
+  generated[1] = next_char[1][1]
+  return self:decode_string(generated)
+end
+
 -- Original sampling interface
 
 --[[

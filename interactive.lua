@@ -3,6 +3,8 @@ require 'nn'
 
 require 'LanguageModel'
 local utf8 = require 'lua-utf8'
+local stdio = require 'posix.stdio'
+local poll = require 'posix.poll'
 
 local cmd = torch.CmdLine()
 cmd:option('-checkpoint', '')
@@ -10,6 +12,7 @@ cmd:option('-seed', 0)
 cmd:option('-temperature', 1)
 cmd:option('-gpu', 0)
 cmd:option('-gpu_backend', 'cuda')
+cmd:option('-read_timeout', 0)
 cmd:option('-verbose', 0)
 local opt = cmd:parse(arg)
 
@@ -52,10 +55,26 @@ if opt.verbose == 1 then
   io.stderr:flush()
 end
 
+local stdin_fd = stdio.fileno(io.stdin)
+local timeout = opt.read_timeout
+function read_nonblocking()
+  read_chars = {}
+  table.insert(read_chars, io.stdin:read(1))
+  while poll.rpoll(stdin_fd, timeout) == 1 do
+    local c = io.stdin:read(1)
+    if c == nil then 
+      break
+    else
+      table.insert(read_chars, c)
+    end
+  end
+  return table.concat(read_chars)
+end
+
 model:sampling(seed, opt.temperature)
 
 local running = true
-local input_string = io.input():read('*a')
+local input_string = read_nonblocking()
 local command = '?'
 
 local i = 0
@@ -71,34 +90,45 @@ while running and input_string ~= '' do
 	command = token
       elseif token == 'g' then
 	local s = model:generate(1)
-	io.write(s, '\n')
+	io.stdout:write(s, '\n')
+	io.stdout:flush()
+      elseif token == 'n' then
+	local s = model:peek()
+	io.stdout:write(s, '\n')
+	io.stdout:flush()
       elseif token == 'c' then
 	model:sampling(seed, opt.temperature)
-	io.write('\n')
+	io.stdout:write('\n')
+	io.stdout:flush()
       else
-	io.stderr:write('unknown command: ', token, ' ', cp)
-	io.write('\n')
+	io.stderr:write('unknown command: ', token, ' ', cp, '\n')
+	io.stdout:write('\n')
+	io.stdout:flush()
       end
     elseif command == 'o' then
       model:observe(token)
-      io.write('\n')
+      io.stdout:write('\n')
+      io.stdout:flush()
       command = '?'
     elseif command == 'p' then
       local prob = model:prob(token)
-      io.write(string.format('%.16e', prob), '\n')
+      io.stdout:write(string.format('%.16e', prob), '\n')
+      io.stdout:flush()
       command = '?'
     elseif command == 'q' then
       local logprob = model:logprob(token)
-      io.write(string.format('%.16e', logprob), '\n')
+      io.stdout:write(string.format('%.16e', logprob), '\n')
+      io.stdout:flush()
       command = '?'
     else
-      io.stderr:write('bad command state: ', command)
-      io.write('\n')
+      io.stderr:write('bad command state: ', command, '\n')
+      io.stdout:write('\n')
+      io.stdout:flush()
       command = '?'
     end
     
   end	 
-  input_string = io.input():read('*a')
+  input_string = read_nonblocking()
 end
 
 if opt.verbose == 1 then io.stderr:write('done, processed ', i, ' commands\n') end
