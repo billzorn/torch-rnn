@@ -72,6 +72,9 @@ while running and input_string ~= '' do
       elseif token == 'g' then
 	local s = model:generate(1)
 	io.write(s, '\n')
+      elseif token == 'c' then
+	model:sampling(seed, opt.temperature)
+	io.write('\n')
       else
 	io.stderr:write('unknown command: ', token, ' ', cp)
 	io.write('\n')
