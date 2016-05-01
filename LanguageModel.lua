@@ -207,7 +207,7 @@ function LM:logprob(c)
   local x_len = x:size(1)
   assert(x_len == 1)
   if not self.has_probs then self:compute_probs() end
-  return torch.div(torch.log(self.probs[x[1]]), torch.log(2))
+  return torch.log(self.probs[x[1]]) / torch.log(2)
 end
 
 -- Generate n characters under the model
