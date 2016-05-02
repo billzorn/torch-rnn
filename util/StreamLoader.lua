@@ -92,7 +92,7 @@ function StreamLoader:__init(kwargs)
 end
 
 function StreamLoader:close_stream()
-  signal.kill(self.stream_pid)
+  signal.kill(self.stream_pid, signal.SIGQUIT)
   local child_pid, msg, status = wait.wait(self.stream_pid)
   return child_pid, msg, status
 end

@@ -399,6 +399,8 @@ for i = first_batch, num_iterations do
 
 end
 
+if streamer ~= nil then streamer:close_stream() end
+
 if opt.verbose >= 2 then
   print('Training finished.')
 end
