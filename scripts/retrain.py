@@ -66,7 +66,7 @@ def main(args):
 
     # make the checkpoint directoy, if it doesn't exist
     if not os.path.exists(cp_dir):
-        os.path.makedirs(cp_dir)
+        os.makedirs(cp_dir)
 
     cp, batch = get_last_cp_batch(cp_dir, cp_prefix, cp_suffix)
 
